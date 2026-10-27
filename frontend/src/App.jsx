@@ -37,9 +37,10 @@ ChartJS.register(
   Filler
 );
 
-const API_BASE = (
-  import.meta.env.VITE_API_BASE || (import.meta.env.DEV ? 'http://localhost:8000' : '')
-).replace(/\/$/, '');
+const RAW_API_BASE =
+  import.meta.env.VITE_API_BASE ||
+  (import.meta.env.DEV ? 'http://localhost:8000' : 'https://uk-wind-trading-desk.onrender.com');
+const API_BASE = String(RAW_API_BASE).trim().replace(/\/+$/, '');
 
 const DEFAULT_DATE = '2026-01-15';
 
