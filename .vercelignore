@@ -1,8 +1,0 @@
-frontend
-__pycache__
-*.pyc
-test_backend.py
-ingest_elexon.py
-Dockerfile
-docker-compose.yml
-requirements-dev.txt
