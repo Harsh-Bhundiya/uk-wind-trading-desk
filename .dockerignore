@@ -1,0 +1,9 @@
+frontend
+__pycache__
+*.pyc
+.git
+.gitignore
+.vercelignore
+vercel.json
+docker-compose.yml
+README.md

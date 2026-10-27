@@ -1,109 +1,122 @@
-# UK Day-Ahead Renewable Energy Trading & Forecast Accuracy Platform
+# UK Day-Ahead Wind Forecast Accuracy & Procurement Desk
 
-An end-to-end quantitative trading application designed for UK electricity utilities operating in the Day-Ahead wholesale market. It evaluates National Grid wind generation forecasts against actual delivered power from Elexon BMRS for January 2026, strictly eliminating lookahead bias and providing actionable procurement hedging.
+A web app for a UK energy utility's day-ahead trading team. It shows the wind forecast that was actually available before the day-ahead auction closed, measures how wrong that forecast was against Elexon actuals for January 2026, and turns the measured error into a thermal procurement estimate. The UI is responsive and works on phones, tablets and desktops.
+
+Data scope: Elexon BMRS only, national wind generation. Actuals come from `FUELHH` (fuel type `WIND`) and forecasts from `WINDFOR`.
 
 ---
 
-## 1. Project Directory Structure
+## 1. Repository layout
 
 ```
-gridbricks-challenge/
-├── .gitignore                     # Ignores bytecode, virtual environments, node_modules, and dist
-├── Dockerfile                     # Production container spec for Python FastAPI (supports $PORT)
-├── docker-compose.yml             # Full-stack container orchestration
-├── requirements.txt               # Pinned Python dependencies
-├── energy_data.db                 # SQLite database storing raw Elexon tables & 1,488 verified matched records
-├── january_2026_wind_data.csv     # Exportable CSV of matched time series (1,488 rows)
-├── ingest_elexon.py               # Matching ETL script with D-1 09:20 UTC gate-closure logic
-├── main.py                        # FastAPI REST API with CORS, context-managed DB & P90 buffers
-├── test_backend.py                # Automated pytest suite (includes zero hindsight leakage test)
-└── frontend/                      # React SPA (Vite + Vanilla CSS + Chart.js)
-    ├── Dockerfile                 # Multi-stage Nginx container with build-time ARG VITE_API_BASE
-    ├── nginx.conf                 # Nginx SPA fallback configuration
-    ├── vercel.json                # Vercel deployment routing configuration
-    ├── package.json
-    ├── src/
-    │   ├── App.jsx                # Trading dashboard with dynamic cutoff metadata & adaptive buffer
-    │   ├── index.css              # Custom Vanilla CSS utilizing trading color palette
-    │   └── main.jsx
+.
+├── main.py                    FastAPI backend (read-only SQLite access, metrics, CSV export)
+├── ingest_elexon.py           Rebuilds matched_time_series from the raw tables with the D-1 09:20 UTC cutoff
+├── test_backend.py            Pytest suite, includes a no-hindsight-leakage test
+├── energy_data.db             SQLite: raw actuals, raw forecasts, matched_time_series
+├── january_2026_wind_data.csv Export of matched_time_series (1,488 rows)
+├── requirements.txt           Runtime Python dependencies (pinned)
+├── requirements-dev.txt       Runtime + test dependencies
+├── Dockerfile                 Backend image (honours $PORT)
+├── docker-compose.yml         Backend + frontend together
+├── vercel.json                Vercel config for the backend project
+├── .vercelignore / .dockerignore
+└── frontend/                  React (Vite) + Chart.js single-page app
+    ├── src/App.jsx            Dashboard, chart, procurement calculator
+    ├── src/index.css          Mobile-first responsive styles
+    ├── Dockerfile             Multi-stage build served by nginx (build arg VITE_API_BASE)
+    ├── nginx.conf             SPA fallback
+    └── vercel.json            SPA rewrite for the frontend project
 ```
 
 ---
 
-## 2. Key Architecture & Market Assumptions
+## 2. Method and assumptions
 
-### A. Strict Gate Closure (Elimination of Hindsight Leakage)
-In Great Britain (GB), the Day-Ahead wholesale power auction (EPEX SPOT / Nord Pool) closes at **09:20:00 UTC** on day $D-1$ for electricity delivery across all 48 settlement periods of day $D$.
-* **Flaw in Naive Matching:** Merely picking `MAX(publish_time)` pulls forecasts published *during or after* the delivery hour, introducing severe hindsight leakage.
-* **Our Implementation:** The ETL pipeline enforces a strict cutoff: for delivery on date $D$, only forecasts published on or before $D-1$ at 09:20:00Z are eligible. Because Elexon issues forecasts at 07:30 UTC, 09:30 UTC, etc., the last pre-auction forecast available to the trader is the **07:30 UTC run**.
-* **Result:** All 1,488 half-hourly settlement periods feature strictly positive lead times ranging between **16.5 hours and 40.0 hours** prior to delivery.
+**Decision cutoff.** The GB day-ahead auction on EPEX SPOT closes at 09:20 GMT on D-1. For delivery on day D, only forecasts with `publish_time <= (D-1) 09:20 UTC` are eligible, and the latest eligible one is used. Forecasts are issued at 02:30, 04:30, 07:30, 09:30 and so on (UTC), so the forecast available to the trader is the 07:30 run. Assumption: the client trades in that auction. In January, UTC equals UK local time.
 
-### B. High-Resolution Half-Hourly Alignment
-While forecasts are published on an hourly grid, actual generation operates on 30-minute settlement periods (48 periods/day). Our matching engine maps each hourly forecast to both constituent settlement periods (e.g. 14:00 forecast applies to Periods 29 [14:00-14:30] and 30 [14:30-15:00]), ensuring all 1,488 actual records are evaluated with zero data omission.
+**Why this matters.** Taking the latest forecast per slot (`MAX(publish_time)`) uses forecasts issued after delivery and understates the error. The cutoff version is stricter and gives a higher error.
 
-### C. Quantified Accuracy & Asymmetric Error Hedging
-Across all 1,488 periods in January 2026 under D-1 09:20Z cutoff:
-* **True Day-Ahead MAE:** $\pm 2,145.17\text{ MW}$
-* **Root Mean Squared Error (RMSE):** $2,615.81\text{ MW}$
-* **Mean Absolute Percentage Error (MAPE):** $22.44\%$
-* **Mean Bias Error (MBE):** $+1,851.90\text{ MW}$ (Consistent over-forecast in $84.9\%$ of periods).
-* **Empirical P90 Buffer:** The 90th percentile deficit buffer is **$+4,291.00\text{ MW}$**, reflecting the high-tail risk of wind under-delivery.
-* **Domain Hypothesis on Systematic Bias:** Elexon `WINDFOR` forecasts national transmission + embedded wind capacity, whereas `FUELHH` captures transmission-metered outturn. This structural offset causes the persistent $+1.85\text{ GW}$ over-prediction, reinforcing why utilities cannot trade purely on raw forecasts without hedging buffers.
-* **Adaptive Hedging:** The procurement calculator provides both an **empirical P90 buffer cap** ($+4,291\text{ MW}$) and an **adaptive proportional buffer** ($22.44\%$ of forecasted volume), preventing artificial negative renewable credits during low-wind regimes.
+**Half-hourly alignment.** Forecasts are hourly and actuals are half-hourly. Each hourly forecast is applied to both of its half-hour settlement periods, so all 1,488 actual periods (31 days x 48) are evaluated.
 
-### D. Data Ingestion Note (`ingest_elexon.py`)
-The repository includes a pre-ingested SQLite database (`energy_data.db`) containing raw `actuals` and raw `forecasts` downloaded directly from the official Elexon BMRS API streams (`FUELHH/stream` and `WINDFOR/stream`). 
+**Results (January 2026, all 1,488 periods):**
 
-When `ingest_elexon.py` is executed locally, it processes and recomputes the strict D-1 09:20 UTC gate-closure matching from the local SQLite tables rather than re-downloading the entire multi-megabyte streams over the network. This eliminates network flakiness, rate-limiting, and makes local evaluation and CI test execution instantaneous.
+| Metric | Value |
+|---|---|
+| MAE | 2,145.17 MW |
+| RMSE | 2,615.81 MW |
+| MAPE | 22.44% |
+| Mean bias (forecast - actual) | +1,851.90 MW |
+| Periods over-forecast | 84.9% |
+| P90 shortfall buffer | 4,291.00 MW |
+| Lead time before cutoff | 16.5 h to 40.0 h |
+
+**Systematic over-forecast.** The forecast is too high in most periods. One possible explanation is a difference in coverage between `WINDFOR` and `FUELHH`; this has not been verified, so the app treats it as a bias to hedge against.
+
+**Procurement calculator.** Thermal to procure = demand - max(0, average forecast wind - buffer). The buffer is either the P90 cap or a proportional MAPE buffer. It uses the day's average forecast and one flat demand figure entered by the user. Real procurement is per slot, so treat it as an estimate.
+
+**Data ingestion.** `energy_data.db` ships with the raw `actuals` and `forecasts` already downloaded from the Elexon `FUELHH` and `WINDFOR` streams. `ingest_elexon.py` does not call the network; it recomputes the matched table and CSV from those raw tables and gives identical output on re-run.
 
 ---
 
-## 3. How to Start the Application Locally
+## 3. Run locally
 
-### Option 1: Direct Local Execution
-
-#### Backend (Python 3.10+):
+### Backend (Python 3.10+)
 ```bash
-# In the root folder:
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 python main.py
-# Backend runs at http://localhost:8000
-# Interactive Swagger Documentation: http://localhost:8000/docs
 ```
+API on http://localhost:8000, docs on http://localhost:8000/docs.
 
-#### Running Automated Tests:
+### Tests
 ```bash
-python test_backend.py
-# All 6 integration tests verify data integrity, zero hindsight leakage, and lead times.
+python -m pytest -q test_backend.py
 ```
 
-#### Frontend (Node.js 18+):
+### Frontend (Node 18+)
 ```bash
 cd frontend
 npm install
 npm run dev
-# Frontend runs at http://localhost:5173
 ```
+App on http://localhost:5173. In development it calls http://localhost:8000. Set `VITE_API_BASE` to point elsewhere.
 
-### Option 2: Docker Compose (Single Command)
+### Docker
 ```bash
-docker-compose up --build
-# Backend: http://localhost:8000
-# Frontend: http://localhost:3000
+docker compose up --build
 ```
+Backend on http://localhost:8000, frontend on http://localhost:3000.
 
 ---
 
-## 4. Live Deployment
+## 4. Deployment (Vercel)
 
-* **Frontend (Vercel):** Set Root Directory to `frontend`. Configure Environment Variable `VITE_API_BASE` pointing to backend URL.
-* **Backend API (Render/Railway):** Connect GitHub repo, build command `pip install -r requirements.txt`, start command `uvicorn main:app --host 0.0.0.0 --port $PORT`.
+Two Vercel projects from the same repo.
+
+1. **Backend project**: Root Directory = repository root. `vercel.json` builds `main.py` with the Python runtime and bundles the database and CSV. Optionally set env var `ALLOWED_ORIGINS` to the frontend URL.
+2. **Frontend project**: Root Directory = `frontend`. Framework preset Vite. Set env var `VITE_API_BASE` to the backend URL (no trailing slash), then redeploy, because Vite embeds it at build time.
+
+Any Docker host can run the backend instead using the root `Dockerfile`.
+
+**Live links**
+
+* Frontend: LIVE_FRONTEND_URL
+* Backend API: LIVE_BACKEND_URL
 
 ---
 
-## 5. Explicit Disclosure of AI Tool Usage
+## 5. API
 
-As permitted and encouraged by the hiring challenge instructions, AI assistance (Google Antigravity & Gemini & claude) was utilized during the development of this application for:
-1. Brainstorming Day-Ahead gate closure market mechanics and mathematical formula definitions.
-2. Rapid scaffolding of the FastAPI REST endpoints and Pydantic schemas.
-3. Chart.js visual configuration and color palette harmonisation (`#010736`, `#0D1C42`, `#22396F`, `#FCF1D0`).
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | Service info and active cutoff |
+| `GET /api/dates` | Available delivery dates |
+| `GET /api/summary-metrics?start_date=&end_date=` | MAE, RMSE, MAPE, bias, P90 buffer, lead time |
+| `GET /api/day-forecast?date=YYYY-MM-DD` | 48 slots with forecast, actual, publish time, lead time, band |
+| `GET /api/export-csv` | Matched dataset as CSV |
+
+---
+
+## 6. AI tool disclosure
+
+AI tools (Google Antigravity, Gemini and Claude) were used during development for: working through day-ahead market mechanics and the error metrics, scaffolding the FastAPI endpoints, reviewing the code and data for bugs, building the responsive React UI and Chart.js configuration, and writing the Docker and Vercel configuration. All results were re-checked against the raw database tables.

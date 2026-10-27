@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   backend:
     build:
@@ -9,16 +7,17 @@ services:
       - "8000:8000"
     environment:
       - PORT=8000
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: http://localhost:8000
     ports:
       - "3000:3000"
     depends_on:
       - backend
-    environment:
-      - VITE_API_BASE=http://localhost:8000
     restart: unless-stopped

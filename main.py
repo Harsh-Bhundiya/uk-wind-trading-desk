@@ -15,6 +15,7 @@ from contextlib import contextmanager
 import sqlite3
 import os
 import math
+from pathlib import Path
 from typing import Optional
 
 app = FastAPI(
@@ -40,7 +41,7 @@ CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "january_202
 def get_db():
     if not os.path.exists(DB_PATH):
         raise HTTPException(status_code=500, detail="Database not initialized. Please run ingest_elexon.py.")
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(Path(DB_PATH).as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
